@@ -1,0 +1,230 @@
+#!/bin/sh
+
+export POSIXLY_CORRECT=yes
+export LC_NUMERIC=en_US.UTF-8
+
+printHelp(){
+  echo "Usage: tradelog [-h | --help]"
+  echo "       tradelog [FILTER] [COMMAND] [LOG [LOG2 [...]]"
+  echo
+  echo "Possible commands:"
+  echo "(There can be only one)"
+  echo
+  echo "list-tick                  Prints list of all existing tickers."
+  echo "profit                     Shows profit from closed positions."
+  echo "pos                        Shows value of positions that are currently opened. Sorted by amount from high to low."
+  echo "last-price                 Prints last known price for every ticker."
+  echo "hist-ord                   Prints histogram of numbers of transactions for given ticker."
+  echo "graph-pos                  Prints graph of amount of positions being hold at the moment for given ticker."
+  echo
+  echo "Possible filters:"
+  echo "(DATETIME stocks in filters is in YYYY-MM-DD HH:MM:SS format)"
+  echo
+  echo "-a DATETIME , after:       Program takes information only after given date. (Not including given date)."
+  echo "-b DATETIME , before:      Program takes information only before given date. (Not including given date)"
+  echo "-t TICKER                  Program takes information only for given ticker. If there's more tickers than one, program considers all of them."
+  echo "-w WIDTH                   Set width of longest line in graph to WIDTH. WIDTH must be a positive whole number. More uses of WIDTH may cause incorrect outputs."
+  echo
+}
+profitFunction(){
+  logFiles=$(echo "$logFiles" | awk -F ";" '{
+  if($3=="sell"){made+=$4*$6}
+  if($3=="buy"){made-=$4*$6}
+  }END{printf("%.2f\n",made)}')
+}
+lastPriceFunction(){
+  #nájdem riadok s najdlhším číslom a podľa neho zarovnávam všetky riadky. Vypíšem vo formáte "Ticker : cena"
+  logFiles=$(echo "$logFiles" | awk -F ";" '{
+  tickersLastPrice[$2]=$4
+  }END{
+    longest = 0
+    for (ticker in tickersLastPrice){
+      num=length(sprintf("%.2f",tickersLastPrice[ticker]))
+      if(num > longest){longest = num}}
+    for (ticker in tickersLastPrice) {
+      printf(sprintf("%%-10s: %%%s.2f\n",longest), ticker, tickersLastPrice[ticker])
+    }}' | sort -t: -k1)
+}
+histOrdFunction(){
+  #Zistím si ticker, ktorý má v dokumente najviac transakcií, následne potom ich printujem podľa abecedy a printujem toľko "#" koľko som napočítal transakcií. Líši sa to podľa toho či je zadaní width, alebo nie.
+  logFiles=$(echo "$logFiles" | awk -F ";" -v "w=$width" '{
+  transactions[$2]+=1
+  }END{
+    if(w > 0){
+      longest = 0
+      for(ticker in transactions){
+      if(transactions[ticker] > longest){ longest = transactions[ticker]}}
+    }
+    for(ticker in transactions){
+    #využívam výpis %-10s aby bol výpis zarovnaný vľavo a dvojbodka sa mi nachádzala na 11 pozícii.
+      printf "%-10s:",ticker
+      if(w > 0){ chars = int(transactions[ticker]/(longest/w))
+      }else{chars = transactions[ticker]}
+      if(transactions[ticker]>0 && chars>0){
+        printf " "
+        i=0
+        while(i<chars){
+          printf "#"
+          i++}
+      }
+      printf "\n"
+    }
+  }'| sort -t: -k1)
+}
+posFunction(){
+  #Hodnotu počítam ako počet držených jednotek * jednotková cena z poslednej transakcie
+  #Hľadám hodnotu pozície s najviac číslicami, následne vypisujem tickery zarovnané vľavo a ich hodnoty zarovnané vpravo podľa najdenej pozície s najviac číslicami.
+  logFiles=$(echo "$logFiles" | awk -F ";" '{
+  if($3=="buy"){
+    stocks[$2]+=$6
+  }else{
+    stocks[$2]-=$6}
+  lastPrice[$2]=$4
+  }END{
+    longest = 0
+    for (ticker in stocks) {
+      number=length(sprintf("%.2f", stocks[ticker]*lastPrice[ticker]))
+      if(number > longest){longest = number}
+    }
+    for (ticker in stocks) {
+      printf(sprintf("%%-10s: %%%s.2f\n",longest), ticker, stocks[ticker]*lastPrice[ticker])
+    }
+  }'| sort -nr -k2 -t:)
+}
+graphPosFunction(){
+  #Pracuje podobne ako funkcia pos, avšak namiesto hodnoty, vypisujem "#" alebo "!" podľa toho či hodnota je záporná alebo kladná.
+  #Kôli záporným hodnotám som si musel vytvoriť funkciu na výpočet absolútnej hodnoty, aby som vedel nájsť najväčšiu pozíciu.
+  logFiles=$(echo "$logFiles" | awk -F ";" -v "w=$width" '
+    function abs(x){
+      if(x<0){ x=-x }
+      return x
+    }
+
+    {
+    if($3=="buy"){
+      stocks[$2]+=$6
+    }else{
+      stocks[$2]-=$6}
+    lastPrice[$2]=$4
+    }END{
+    longest=0
+    for(ticker in stocks){
+      number=abs(stocks[ticker]*lastPrice[ticker])
+      if(longest<number){longest=number}
+    }
+    for(ticker in stocks){
+      price=stocks[ticker]*lastPrice[ticker]
+      if(price < 0){ symbol="!"
+      }else{symbol="#"}
+      if(w>0){
+        symbolCount=abs(int(price/(longest/w)))
+      }else{
+        symbolCount=int(price/1000)
+      }
+      if(symbolCount>0){
+        printString=sprintf("%*c",symbolCount,symbol)
+        gsub(" ",symbol,printString)
+        printf("%-10s : %s\n",ticker,printString)
+      }else{
+        printf("%-10s :\n",ticker)
+      }
+    }
+  }'| sort -t: -k1,1)
+}
+
+command=""
+width=""
+ticker=""
+width=0
+dateTimeAfter="0000-00-00 00:00:00"
+dateTimeBefore="9999-12-31 23:59:59"
+
+while [ "$#" -gt 0 ] ; do
+    case "$1" in
+      list-tick | profit | pos | last-price | hist-ord | graph-pos)
+        command="$1"
+        shift
+        ;;
+      -a)
+        dateTimeAfter="$2"
+        shift
+        shift
+        ;;
+      -b)
+        dateTimeBefore="$2"
+        shift
+        shift
+        ;;
+      -t)
+        if [ -z "$ticker" ]; then
+          ticker="$2"
+        else
+          ticker="$ticker|$2"
+        fi
+        shift
+        shift
+        ;;
+      -w)
+        if [ $width != 0 ]; then
+          echo "Error. There can only be one WIDTH filter."
+          exit 1
+        fi
+        width="$2"
+        shift
+        shift
+        ;;
+      -h)
+        printHelp
+        exit 0
+        ;;
+      --help)
+        printHelp
+        exit 0
+        ;;
+      *.log.gz)
+        logFiles="$logFiles$(gzip -d -c "$1")\n"
+        shift
+        ;;
+       *.log)
+        logFiles="$logFiles$(cat "$1")\n"
+        shift
+        ;;
+      *)
+        echo "Invalid argument."
+        exit 1
+
+      esac
+done
+
+#Odstráni všetky prázdne riadky
+logFiles=$(echo "$logFiles" | sed '/^$/d')
+
+if [ -n "$ticker" ]; then
+    logFiles=$(echo "$logFiles" | awk -F ';' -v "ticker=^($ticker)$" '{if($2~ticker){print}}')
+fi
+if [ -n "$dateTimeAfter" ]; then
+    logFiles=$(echo "$logFiles" | awk -F ';' -v after="$dateTimeAfter" '{if($1 > after){print}}')
+fi
+if [ -n "$dateTimeBefore" ]; then
+    logFiles=$(echo "$logFiles" | awk -F ';' -v before="$dateTimeBefore" '{if($1 < before){print}}')
+fi
+if [ "$command" = "list-tick" ]; then
+    logFiles=$(echo "$logFiles" | awk -F ';' '{print $2}' | sort -u)
+fi
+if [ "$command" = "profit" ]; then
+    profitFunction
+fi
+if [ "$command" = "last-price" ]; then
+    lastPriceFunction
+fi
+if [ "$command" = "hist-ord" ]; then
+    histOrdFunction
+fi
+if [ "$command" = "pos" ]; then
+   posFunction
+fi
+if [ "$command" = "graph-pos" ]; then
+   graphPosFunction
+fi
+echo "$logFiles"
+exit 0
