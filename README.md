@@ -3,7 +3,8 @@ IOS - 1. Project 2021
 
 Project Tradelog uses data from stock trading and filters through them.
 
-Usage: tradelog [-h | --help]
+Usage:
+       tradelog [-h | --help]
        tradelog [FILTER] [COMMAND] [LOG [LOG2 [...]]
        Possible commands:
        (There can be only one)
